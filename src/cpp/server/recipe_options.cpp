@@ -1,6 +1,7 @@
 #include <lemon/recipe_options.h>
 #include <lemon/system_info.h>
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <map>
 
 namespace lemon {
@@ -146,6 +147,17 @@ void RecipeOptions::add_cli_options(CLI::App& app, json& storage) {
 #ifndef LEMONADE_CLI
         SystemInfo::SupportedBackendsResult backend_result;
         if (try_get_backend_options(opt_name, backend_result)) {
+            if (opt_name == "llamacpp_backend") {
+                bool has_rocm_preview = std::find(
+                    backend_result.backends.begin(),
+                    backend_result.backends.end(),
+                    "rocm-preview"
+                ) != backend_result.backends.end();
+                if (has_rocm_preview && std::find(backend_result.backends.begin(), backend_result.backends.end(), "rocm") == backend_result.backends.end()) {
+                    backend_result.backends.push_back("rocm");
+                }
+            }
+
             std::string default_backend = backend_result.backends.empty() ? "" : backend_result.backends[0];
             o = app.add_option_function<std::string>(key, [opt_name, &storage = storage](const std::string& val) { storage[opt_name] = val; }, opt["help"]);
             o->default_val(default_backend);

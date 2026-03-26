@@ -38,7 +38,15 @@ def get_current_config():
 CAPABILITIES = {
     "llm": {
         "llamacpp": {
-            "backends": ["vulkan", "rocm", "metal", "cpu"],
+            "backends": [
+                "vulkan",
+                "rocm-stable",
+                "rocm-preview",
+                "rocm",
+                "metal",
+                "cpu",
+                "system",
+            ],
             "supports": {
                 "chat_completions": True,
                 "chat_completions_streaming": True,

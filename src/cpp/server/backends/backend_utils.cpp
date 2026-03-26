@@ -150,6 +150,11 @@ namespace lemon::backends {
         upper.erase(remove_if(upper.begin(), upper.end(), [](const char& c) { return c == '-'; }), upper.end());
         std::string env = "LEMONADE_" + upper + "_BIN";
         const char* backend_bin_env = std::getenv(env.c_str());
+
+        if (!backend_bin_env && recipe == "llamacpp" && backend == "rocm-preview") {
+            backend_bin_env = std::getenv("LEMONADE_LLAMACPP_ROCM_BIN");
+        }
+
         if (!backend_bin_env) {
             return "";
         }
@@ -211,6 +216,11 @@ namespace lemon::backends {
     }
 
     std::string BackendUtils::get_backend_version(const std::string& recipe, const std::string& backend) {
+        std::string resolved_backend = backend;
+        if (recipe == "llamacpp" && backend == "rocm") {
+            resolved_backend = "rocm-preview";
+        }
+
         std::string config_path = utils::get_resource_path("resources/backend_versions.json");
 
         json config = utils::JsonUtils::load_from_file(config_path);
@@ -220,13 +230,13 @@ namespace lemon::backends {
         }
 
         const auto& recipe_config = config[recipe];
-        const std::string backend_id = recipe + ":" + backend;
+        const std::string backend_id = recipe + ":" + resolved_backend;
 
-        if (!recipe_config.contains(backend) || !recipe_config[backend].is_string()) {
+        if (!recipe_config.contains(resolved_backend) || !recipe_config[resolved_backend].is_string()) {
             throw std::runtime_error("backend_versions.json is missing version for backend: " + backend_id);
         }
 
-        std::string version = recipe_config[backend].get<std::string>();
+        std::string version = recipe_config[resolved_backend].get<std::string>();
         return version;
     }
 

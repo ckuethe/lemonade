@@ -51,7 +51,7 @@ These settings are recognized by Lemonade Server regardless of launch method:
 | `LEMONADE_HOST`                    | Host address for where to listen for connections                                                                                                        |
 | `LEMONADE_PORT`                    | Port number to run the server on                                                                                                                        |
 | `LEMONADE_LOG_LEVEL`               | Logging level                                                                                                                                           |
-| `LEMONADE_LLAMACPP`                | Default LlamaCpp backend (`vulkan`, `rocm`, or `cpu`)                                                                                                   |
+| `LEMONADE_LLAMACPP`                | Default LlamaCpp backend (`system`, `rocm-stable`, `rocm-preview`, `rocm` alias, `vulkan`, `metal`, or `cpu`)                                         |
 | `LEMONADE_WHISPERCPP`              | Default WhisperCpp backend: `npu` or `cpu` on Windows; `cpu` or `vulkan` on Linux                                                                       |
 | `LEMONADE_CTX_SIZE`                | Default context size for models                                                                                                                         |
 | `LEMONADE_LLAMACPP_ARGS`           | Custom arguments to pass to llama-server                                                                                                                |
@@ -69,7 +69,9 @@ You can provide your own `llama-server`, `whisper-server`, or `ryzenai-server` b
 
 | Environment Variable | Description |
 |---------------------|-------------|
-| `LEMONADE_LLAMACPP_ROCM_BIN` | Path to custom `llama-server` binary for ROCm backend |
+| `LEMONADE_LLAMACPP_ROCM_STABLE_BIN` | Path to custom `llama-server` binary for ROCm stable backend |
+| `LEMONADE_LLAMACPP_ROCM_PREVIEW_BIN` | Path to custom `llama-server` binary for ROCm preview backend |
+| `LEMONADE_LLAMACPP_ROCM_BIN` | Legacy alias for `LEMONADE_LLAMACPP_ROCM_PREVIEW_BIN` |
 | `LEMONADE_LLAMACPP_VULKAN_BIN` | Path to custom `llama-server` binary for Vulkan backend |
 | `LEMONADE_LLAMACPP_CPU_BIN` | Path to custom `llama-server` binary for CPU backend |
 | `LEMONADE_WHISPERCPP_CPU_BIN` | Path to custom `whisper-server` binary for CPU backend |

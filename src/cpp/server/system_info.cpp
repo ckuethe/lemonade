@@ -77,17 +77,17 @@ const std::map<std::string, std::string> ROCM_ARCH_MAPPING = {
     {"gfx1032", "gfx103X"},
     {"gfx1034", "gfx103X"},
     // Note: gfx1033, gfx1035, gfx1036 are NOT included (not confirmed as supported)
-    
+
     // RDNA3 family (gfx110X)
     {"gfx1100", "gfx110X"},
     {"gfx1101", "gfx110X"},
     {"gfx1102", "gfx110X"},
     {"gfx1103", "gfx110X"},
-    
+
     // RDNA3.5 iGPUs - explicit binary names (no family mapping)
     {"gfx1150", "gfx1150"},  // Maps to exact binary name
     {"gfx1151", "gfx1151"},  // Maps to exact binary name
-    
+
     // RDNA4 family (gfx120X)
     {"gfx1200", "gfx120X"},
     {"gfx1201", "gfx120X"},
@@ -116,7 +116,7 @@ struct RecipeBackendDef {
 //
 // Empty family set {} means "all families of that device type"
 static const std::vector<RecipeBackendDef> RECIPE_DEFS = {
-    // llamacpp with multiple backends (order = preference: system > metal > vulkan > rocm > cpu)
+    // llamacpp with multiple backends (order = preference)
     {"llamacpp", "system", {"linux"}, {
         {"cpu", {"x86_64"}}, // Placeholder, actual check is PATH-based
     }},
@@ -124,14 +124,18 @@ static const std::vector<RecipeBackendDef> RECIPE_DEFS = {
     {
         {"metal", {}},
     }},
+    {"llamacpp", "rocm-stable", {"linux"}, {
+        {"amd_igpu", {"gfx1150", "gfx1151"}},                      // STX Point/Halo iGPUs (explicit binaries)
+        {"amd_dgpu", {"gfx103X", "gfx110X", "gfx120X"}},          // RDNA2/3/4 dGPUs (family binaries)
+    }},
+    {"llamacpp", "rocm-preview", {"windows", "linux"}, {
+        {"amd_igpu", {"gfx1150", "gfx1151"}},                      // STX Point/Halo iGPUs (explicit binaries)
+        {"amd_dgpu", {"gfx103X", "gfx110X", "gfx120X"}},          // RDNA2/3/4 dGPUs (family binaries)
+    }},
     {"llamacpp", "vulkan", {"windows", "linux"}, {
         {"cpu", {"x86_64"}},
         {"amd_igpu", {}},      // all iGPU families
         {"amd_dgpu", {}},      // all dGPU families
-    }},
-    {"llamacpp", "rocm", {"windows", "linux"}, {
-        {"amd_igpu", {"gfx1150", "gfx1151"}},                      // STX Point/Halo iGPUs (explicit binaries)
-        {"amd_dgpu", {"gfx103X", "gfx110X", "gfx120X"}},          // RDNA2/3/4 dGPUs (family binaries)
     }},
     {"llamacpp", "cpu", {"windows", "linux"}, {
         {"cpu", {"x86_64"}},
@@ -298,8 +302,11 @@ static bool device_matches_constraint(const std::string& device_family,
 
 // Generic installation check
 static bool is_recipe_installed(const std::string& recipe, const std::string& backend, std::string& error_message) {
+    bool is_llamacpp_rocm_backend = recipe == "llamacpp" &&
+        (backend == "rocm-stable" || backend == "rocm-preview");
+
     // Special handling for ROCm backends on gfx1151 (Strix Halo) if kernel CWSR fix is missing
-    if ((recipe == "llamacpp" || recipe == "sd-cpp") && backend == "rocm") {
+    if ((recipe == "sd-cpp" && backend == "rocm") || is_llamacpp_rocm_backend) {
         if (needs_gfx1151_cwsr_fix()) {
             error_message = "Linux kernel missing support";
             return false;
@@ -740,13 +747,25 @@ json SystemInfo::build_recipes_info(const json& devices) {
         detected_devices.push_back({"metal", "Apple Metal", "metal", true});
     }
 
-    // Check if user prefers system llamacpp backend (off by default)
+    // Default to preferring system llamacpp on Linux AMD systems.
+    // This can be overridden with LEMONADE_LLAMACPP_PREFER_SYSTEM=true/false.
     bool prefer_llamacpp_system = false;
+    if (current_os == "linux") {
+        for (const auto& detected : detected_devices) {
+            if (detected.type == "amd_igpu" || detected.type == "amd_dgpu") {
+                prefer_llamacpp_system = true;
+                break;
+            }
+        }
+    }
+
     const char* prefer_system_env = std::getenv("LEMONADE_LLAMACPP_PREFER_SYSTEM");
     if (prefer_system_env) {
         std::string pref_val(prefer_system_env);
         if (pref_val == "true" || pref_val == "1") {
             prefer_llamacpp_system = true;
+        } else if (pref_val == "false" || pref_val == "0") {
+            prefer_llamacpp_system = false;
         }
     }
 
@@ -927,8 +946,11 @@ json SystemInfo::build_recipes_info(const json& devices) {
                 backend["state"] = "installable";
                 backend["message"] = install_error.empty() ? "Backend is supported but not installed." : install_error;
 
-                // Special action for ROCm backend on llamacpp/sd-cpp if CWSR fix is missing
-                if ((def.recipe == "llamacpp" || def.recipe == "sd-cpp") && def.backend == "rocm"
+                bool is_rocm_backend = (def.recipe == "sd-cpp" && def.backend == "rocm") ||
+                    (def.recipe == "llamacpp" && (def.backend == "rocm-stable" || def.backend == "rocm-preview"));
+
+                // Special action for ROCm backends on llamacpp/sd-cpp if CWSR fix is missing
+                if (is_rocm_backend
                     && !install_error.empty() && needs_gfx1151_cwsr_fix()) {
                     backend["action"] = "Visit https://lemonade-server.ai/gfx1151_linux.html";
                 } else {
@@ -1216,8 +1238,8 @@ std::string identify_rocm_arch_from_name(const std::string& device_name) {
     }
 
     // RDNA2 GPUs (gfx103X architecture)
-    // AMD Radeon RX 6800 XT, AMD Radeon RX 6800, AMD Radeon RX 6700 XT, 
-    // AMD Radeon RX 6700, AMD Radeon RX 6600 XT, AMD Radeon RX 6600, 
+    // AMD Radeon RX 6800 XT, AMD Radeon RX 6800, AMD Radeon RX 6700 XT,
+    // AMD Radeon RX 6700, AMD Radeon RX 6600 XT, AMD Radeon RX 6600,
     // AMD Radeon RX 6500 XT, AMD Radeon RX 6500
     if (device_lower.find("6800") != std::string::npos ||
         device_lower.find("6700") != std::string::npos ||

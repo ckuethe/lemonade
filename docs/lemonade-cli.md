@@ -280,6 +280,8 @@ The following options are available depending on the recipe being used:
 | `--llamacpp BACKEND` | LlamaCpp backend to use | Auto-detected |
 | `--llamacpp-args ARGS` | Custom arguments to pass to llama-server (must not conflict with managed args) | `""` |
 
+Available `--llamacpp` backends include `system`, `rocm-stable`, `rocm-preview`, `vulkan`, `metal`, and `cpu` (`rocm` remains a compatibility alias for `rocm-preview`).
+
 #### FLM (`flm` recipe)
 
 | Option | Description | Default |
@@ -435,6 +437,7 @@ lemonade launch AGENT --model MODEL_NAME [options]
 **Notes:**
 - The model is loaded before launching the agent
 - Supported agents: `claude`, `codex`
+- Available `--llamacpp` backends include `system`, `rocm-stable`, `rocm-preview`, `vulkan`, `metal`, and `cpu` (`rocm` remains a compatibility alias for `rocm-preview`)
 
 **Examples:**
 
