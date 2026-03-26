@@ -166,24 +166,6 @@ void log_and_store_telemetry_from_response(Router* router, const json& response)
     }
 }
 
-void log_and_store_telemetry_from_router_stats(Router* router) {
-    const auto stats = router->get_stats();
-    if (stats.contains("error")) {
-        return;
-    }
-
-    const int input_tokens = stats.value("input_tokens", 0);
-    const int output_tokens = stats.value("output_tokens", 0);
-    const double ttft_seconds = stats.value("time_to_first_token", 0.0);
-    const double tps = stats.value("tokens_per_second", 0.0);
-
-    if (input_tokens == 0 && output_tokens == 0 && ttft_seconds == 0.0 && tps == 0.0) {
-        return;
-    }
-
-    log_and_store_telemetry(router, input_tokens, output_tokens, ttft_seconds, tps);
-}
-
 } // namespace
 
 
@@ -1580,7 +1562,6 @@ void Server::handle_chat_completions(const httplib::Request& req, httplib::Respo
 
                         // Use unified Router path for streaming
                         router_->chat_completion_stream(request_body, sink);
-                        log_and_store_telemetry_from_router_stats(router_.get());
 
                         return false;
                     }
@@ -1763,7 +1744,6 @@ void Server::handle_completions(const httplib::Request& req, httplib::Response& 
 
                         // Use unified Router path for streaming
                         router_->completion_stream(request_body, sink);
-                        log_and_store_telemetry_from_router_stats(router_.get());
 
                         return false;
                     }
@@ -2697,7 +2677,6 @@ void Server::handle_responses(const httplib::Request& req, httplib::Response& re
 
                         // Use unified Router path for streaming
                         router_->responses_stream(request_body, sink);
-                        log_and_store_telemetry_from_router_stats(router_.get());
 
                         return false;
                     }
