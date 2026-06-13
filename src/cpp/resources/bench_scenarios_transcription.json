@@ -1,0 +1,23 @@
+{
+  "scenarios": [
+    {
+      "name": "transcription-basic-wav",
+      "category": "transcription",
+      "task_type": "transcription",
+      "audio_file": "test/test_speech.wav",
+      "language": "en",
+      "response_format": "json",
+      "warmup_runs": 0,
+      "measurement_runs": 3
+    },
+    {
+      "name": "transcription-basic-auto-lang",
+      "category": "transcription",
+      "task_type": "transcription",
+      "audio_file": "test/test_speech.wav",
+      "response_format": "json",
+      "warmup_runs": 0,
+      "measurement_runs": 3
+    }
+  ]
+}

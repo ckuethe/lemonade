@@ -1,0 +1,30 @@
+{
+  "scenarios": [
+    {
+      "name": "image-sd-turbo-quick",
+      "category": "image",
+      "task_type": "image_generation",
+      "prompt": "A minimalist poster of a lemon tree in flat design style, high contrast, clean background.",
+      "size": "512x512",
+      "steps": 4,
+      "cfg_scale": 1.0,
+      "seed": 42,
+      "response_format": "b64_json",
+      "warmup_runs": 0,
+      "measurement_runs": 3
+    },
+    {
+      "name": "image-photoreal-outdoor",
+      "category": "image",
+      "task_type": "image_generation",
+      "prompt": "Photorealistic sunrise over a mountain lake with light mist and pine trees, natural colors.",
+      "size": "512x512",
+      "steps": 20,
+      "cfg_scale": 2.5,
+      "seed": 123,
+      "response_format": "b64_json",
+      "warmup_runs": 0,
+      "measurement_runs": 3
+    }
+  ]
+}

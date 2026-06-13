@@ -1,0 +1,26 @@
+{
+  "scenarios": [
+    {
+      "name": "tts-short-default",
+      "category": "tts",
+      "task_type": "tts",
+      "input": "Hello from Lemonade benchmark mode. This is a short text to speech smoke test.",
+      "voice": "shimmer",
+      "response_format": "mp3",
+      "speed": 1.0,
+      "warmup_runs": 0,
+      "measurement_runs": 3
+    },
+    {
+      "name": "tts-medium-explanatory",
+      "category": "tts",
+      "task_type": "tts",
+      "input": "Benchmarking text to speech helps verify latency and throughput consistency across model configurations and backend options.",
+      "voice": "alloy",
+      "response_format": "mp3",
+      "speed": 1.0,
+      "warmup_runs": 0,
+      "measurement_runs": 3
+    }
+  ]
+}

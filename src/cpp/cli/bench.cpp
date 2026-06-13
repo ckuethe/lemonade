@@ -3,6 +3,7 @@
 #include <CLI/CLI.hpp>
 #include <lemon/utils/path_utils.h>
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <ctime>
@@ -43,6 +44,116 @@ static double percentile(std::vector<double> values, double p) {
     if (lower == upper) return values[lower];
     double frac = index - static_cast<double>(lower);
     return values[lower] * (1.0 - frac) + values[upper] * frac;
+}
+
+static std::string to_lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+static std::string normalize_task_type(const std::string& raw_task_type) {
+    if (raw_task_type.empty()) return "text_generation";
+
+    const std::string lowered = to_lower(raw_task_type);
+    if (lowered == "text_generation" || lowered == "text" || lowered == "chat" ||
+        lowered == "chat_completion" || lowered == "chat_completions") {
+        return "text_generation";
+    }
+    if (lowered == "image_generation" || lowered == "image") {
+        return "image_generation";
+    }
+    if (lowered == "transcription") {
+        return "transcription";
+    }
+    if (lowered == "tts" || lowered == "text_to_speech") {
+        return "tts";
+    }
+    return lowered;
+}
+
+static bool model_has_label(const json& model_info, const std::string& label) {
+    if (!model_info.contains("labels") || !model_info["labels"].is_array()) return false;
+    for (const auto& item : model_info["labels"]) {
+        if (item.is_string() && item.get<std::string>() == label) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool task_uses_context(const std::string& task_type) {
+    return task_type == "text_generation";
+}
+
+// Validate model-task compatibility using recipe-first routing with label checks.
+static bool model_supports_task(const json& model_info,
+                                const std::string& recipe,
+                                const std::string& task_type,
+                                std::string& reason) {
+    if (task_type == "text_generation") {
+        if (!(recipe == "llamacpp" || recipe == "flm" || recipe == "vllm" ||
+              recipe == "ryzenai-llm" || recipe == "collection.omni")) {
+            reason = "recipe '" + recipe + "' does not support text_generation";
+            return false;
+        }
+        if (model_has_label(model_info, "transcription") || model_has_label(model_info, "tts") ||
+            model_has_label(model_info, "upscaling")) {
+            reason = "labels indicate non-text specialization";
+            return false;
+        }
+        return true;
+    }
+
+    if (task_type == "image_generation") {
+        if (recipe != "sd-cpp") {
+            reason = "recipe '" + recipe + "' does not support image_generation";
+            return false;
+        }
+        if (!model_has_label(model_info, "image")) {
+            reason = "missing required 'image' label";
+            return false;
+        }
+        if (model_has_label(model_info, "upscaling")) {
+            reason = "upscaling-only model is excluded from image_generation benchmarking";
+            return false;
+        }
+        return true;
+    }
+
+    if (task_type == "transcription") {
+        if (!(recipe == "whispercpp" || recipe == "moonshine" || recipe == "flm")) {
+            reason = "recipe '" + recipe + "' does not support transcription";
+            return false;
+        }
+        if (!model_has_label(model_info, "transcription")) {
+            reason = "missing required 'transcription' label";
+            return false;
+        }
+        if (model_has_label(model_info, "tts") || model_has_label(model_info, "upscaling")) {
+            reason = "labels indicate non-transcription specialization";
+            return false;
+        }
+        return true;
+    }
+    if (task_type == "tts") {
+        if (recipe != "kokoro") {
+            reason = "recipe '" + recipe + "' does not support tts";
+            return false;
+        }
+        if (!model_has_label(model_info, "tts")) {
+            reason = "missing required 'tts' label";
+            return false;
+        }
+        if (model_has_label(model_info, "transcription") || model_has_label(model_info, "upscaling")) {
+            reason = "labels indicate non-tts specialization";
+            return false;
+        }
+        return true;
+    }
+
+    reason = "unknown task_type '" + task_type + "'";
+    return false;
 }
 
 double BenchScenarioResult::ttft_mean_ms() const {
@@ -214,15 +325,65 @@ static std::vector<BenchScenario> parse_scenario_file(const std::string& path) {
         scenario.name = item["name"].get<std::string>();
 
         scenario.category = item.value("category", "general");
+        scenario.task_type = normalize_task_type(item.value("task_type", ""));
 
-        if (!item.contains("messages") || !item["messages"].is_array()) continue;
-        scenario.messages = item["messages"].get<std::vector<json>>();
+        if (scenario.task_type == "text_generation") {
+            if (!item.contains("messages") || !item["messages"].is_array()) continue;
+            scenario.messages = item["messages"].get<std::vector<json>>();
+        } else if (scenario.task_type == "image_generation") {
+            if (!item.contains("prompt") || !item["prompt"].is_string()) continue;
+            scenario.prompt = item["prompt"].get<std::string>();
+
+            if (item.contains("size") && item["size"].is_string()) {
+                scenario.size = item["size"].get<std::string>();
+            }
+            if (item.contains("steps") && item["steps"].is_number_integer()) {
+                scenario.steps = item["steps"].get<int>();
+            }
+            if (item.contains("cfg_scale") && item["cfg_scale"].is_number()) {
+                scenario.cfg_scale = item["cfg_scale"].get<double>();
+            }
+            if (item.contains("seed") && item["seed"].is_number_integer()) {
+                scenario.seed = item["seed"].get<int>();
+            }
+            if (item.contains("response_format") && item["response_format"].is_string()) {
+                scenario.response_format = item["response_format"].get<std::string>();
+            }
+        } else if (scenario.task_type == "transcription") {
+            if (!item.contains("audio_file") || !item["audio_file"].is_string()) continue;
+            scenario.audio_file = item["audio_file"].get<std::string>();
+
+            if (item.contains("language") && item["language"].is_string()) {
+                scenario.language = item["language"].get<std::string>();
+            }
+            if (item.contains("response_format") && item["response_format"].is_string()) {
+                scenario.response_format = item["response_format"].get<std::string>();
+            }
+        } else if (scenario.task_type == "tts") {
+            if (!item.contains("input") || !item["input"].is_string()) continue;
+            scenario.input = item["input"].get<std::string>();
+
+            if (item.contains("voice") && item["voice"].is_string()) {
+                scenario.voice = item["voice"].get<std::string>();
+            }
+            if (item.contains("response_format") && item["response_format"].is_string()) {
+                scenario.response_format = item["response_format"].get<std::string>();
+            }
+            if (item.contains("speed") && item["speed"].is_number()) {
+                scenario.speed = item["speed"].get<double>();
+            }
+        } else {
+            std::cerr << "Warning: Unsupported task_type '" << scenario.task_type
+                      << "' in scenario '" << scenario.name << "', skipping." << std::endl;
+            continue;
+        }
 
         scenario.max_tokens = item.value("max_tokens", 128);
         scenario.warmup_runs = item.value("warmup_runs", 0);
         scenario.measurement_runs = item.value("measurement_runs", 3);
 
-        if (item.contains("context") && item["context"].is_object()) {
+        if (scenario.task_type == "text_generation" &&
+            item.contains("context") && item["context"].is_object()) {
             std::string expanded = expand_context(item["context"], scenario.messages);
             for (auto& msg : scenario.messages) {
                 if (msg.contains("role") && msg["role"] == "user") {
@@ -507,6 +668,204 @@ static void extract_timings_into_result(const json& timings, BenchRunResult& res
     }
 }
 
+static bool run_single_bench_textgen(lemonade::LemonadeClient& client,
+                                     const std::string& model,
+                                     const BenchScenario& scenario,
+                                     BenchRunResult& result,
+                                     std::string& error) {
+    json request_body;
+    request_body["model"] = model;
+    request_body["messages"] = scenario.messages;
+    request_body["max_completion_tokens"] = scenario.max_tokens;
+    request_body["temperature"] = 0;
+
+    try {
+        std::string response = client.make_request("/api/v1/chat/completions", "POST",
+                                                   request_body.dump(), "application/json",
+                                                   300000, 300000);
+        auto resp_json = json::parse(response);
+
+        if (resp_json.contains("timings") && resp_json["timings"].is_object()) {
+            extract_timings_into_result(resp_json["timings"], result);
+        }
+        if (resp_json.contains("usage") && resp_json["usage"].is_object()) {
+            extract_usage_into_result(resp_json["usage"], result);
+        }
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+
+    return true;
+}
+
+static bool run_single_bench_image(lemonade::LemonadeClient& client,
+                                   const std::string& model,
+                                   const BenchScenario& scenario,
+                                   BenchRunResult& result,
+                                   std::string& error) {
+    json request_body;
+    request_body["model"] = model;
+    request_body["prompt"] = scenario.prompt;
+    if (!scenario.size.empty()) request_body["size"] = scenario.size;
+    if (scenario.steps > 0) request_body["steps"] = scenario.steps;
+    if (scenario.cfg_scale > 0) request_body["cfg_scale"] = scenario.cfg_scale;
+    if (scenario.seed != 0) request_body["seed"] = scenario.seed;
+    if (!scenario.response_format.empty()) request_body["response_format"] = scenario.response_format;
+
+    try {
+        std::string response = client.make_request("/api/v1/images/generations", "POST",
+                                                   request_body.dump(), "application/json",
+                                                   300000, 300000);
+        auto resp_json = json::parse(response);
+        if (!resp_json.contains("data") || !resp_json["data"].is_array() ||
+            resp_json["data"].empty() ||
+            !resp_json["data"][0].is_object() ||
+            !resp_json["data"][0].contains("b64_json")) {
+            error = "image response missing data[0].b64_json";
+            return false;
+        }
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+
+    // For image generation benchmarks, latency is the primary metric.
+    result.tps = 0.0;
+    result.input_tokens = 0;
+    result.output_tokens = 0;
+    return true;
+}
+
+static bool read_file_binary(const std::string& path, std::string& out, std::string& error) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open()) {
+        error = "could not open audio file: " + path;
+        return false;
+    }
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    out = ss.str();
+    if (out.empty()) {
+        error = "audio file is empty: " + path;
+        return false;
+    }
+    return true;
+}
+
+static void append_multipart_field(std::string& body,
+                                   const std::string& boundary,
+                                   const std::string& name,
+                                   const std::string& value) {
+    body += "--" + boundary + "\r\n";
+    body += "Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n";
+    body += value;
+    body += "\r\n";
+}
+
+static bool run_single_bench_transcription(lemonade::LemonadeClient& client,
+                                           const std::string& model,
+                                           const BenchScenario& scenario,
+                                           BenchRunResult& result,
+                                           std::string& error) {
+    (void)result;
+
+    std::string audio_bytes;
+    if (!read_file_binary(scenario.audio_file, audio_bytes, error)) {
+        return false;
+    }
+
+    const std::string boundary = "----LemonadeBenchBoundary7MA4YWxkTrZu0gW";
+    std::string body;
+    body.reserve(audio_bytes.size() + 1024);
+
+    append_multipart_field(body, boundary, "model", model);
+    if (!scenario.language.empty()) {
+        append_multipart_field(body, boundary, "language", scenario.language);
+    }
+    if (!scenario.response_format.empty()) {
+        append_multipart_field(body, boundary, "response_format", scenario.response_format);
+    }
+
+    const std::string filename = std::filesystem::path(scenario.audio_file).filename().string();
+    body += "--" + boundary + "\r\n";
+    body += "Content-Disposition: form-data; name=\"file\"; filename=\"" + filename + "\"\r\n";
+    body += "Content-Type: audio/wav\r\n\r\n";
+    body += audio_bytes;
+    body += "\r\n";
+    body += "--" + boundary + "--\r\n";
+
+    const std::string content_type = "multipart/form-data; boundary=" + boundary;
+
+    try {
+        std::string response = client.make_request("/api/v1/audio/transcriptions", "POST", body,
+                                                   content_type, 300000, 300000);
+        auto resp_json = json::parse(response);
+        if (!resp_json.contains("text") || !resp_json["text"].is_string() ||
+            resp_json["text"].get<std::string>().empty()) {
+            error = "transcription response missing non-empty 'text'";
+            return false;
+        }
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+
+    return true;
+}
+
+static bool run_single_bench_tts(lemonade::LemonadeClient& client,
+                                 const std::string& model,
+                                 const BenchScenario& scenario,
+                                 BenchRunResult& result,
+                                 std::string& error) {
+    (void)result;
+
+    json request_body;
+    request_body["model"] = model;
+    request_body["input"] = scenario.input;
+    if (!scenario.voice.empty()) request_body["voice"] = scenario.voice;
+    if (!scenario.response_format.empty()) request_body["response_format"] = scenario.response_format;
+    if (scenario.speed > 0) request_body["speed"] = scenario.speed;
+
+    try {
+        std::string response = client.make_request("/api/v1/audio/speech", "POST",
+                                                   request_body.dump(), "application/json",
+                                                   300000, 300000);
+        if (response.empty()) {
+            error = "tts response body is empty";
+            return false;
+        }
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+
+    return true;
+}
+
+static bool dispatch_run_single_bench(lemonade::LemonadeClient& client,
+                                      const std::string& model,
+                                      const BenchScenario& scenario,
+                                      BenchRunResult& result,
+                                      std::string& error) {
+    if (scenario.task_type == "text_generation") {
+        return run_single_bench_textgen(client, model, scenario, result, error);
+    }
+    if (scenario.task_type == "image_generation") {
+        return run_single_bench_image(client, model, scenario, result, error);
+    }
+    if (scenario.task_type == "transcription") {
+        return run_single_bench_transcription(client, model, scenario, result, error);
+    }
+    if (scenario.task_type == "tts") {
+        return run_single_bench_tts(client, model, scenario, result, error);
+    }
+
+    error = "unsupported task type '" + scenario.task_type + "'";
+    return false;
+}
+
 BenchRunResult run_single_bench(lemonade::LemonadeClient& client,
                                 const std::string& model,
                                 const BenchScenario& scenario,
@@ -520,33 +879,23 @@ BenchRunResult run_single_bench(lemonade::LemonadeClient& client,
         query_system_stats(client, _vram, _mem);
     }
 
-    json request_body;
-    request_body["model"] = model;
-    request_body["messages"] = scenario.messages;
-    request_body["max_completion_tokens"] = scenario.max_tokens;
-    request_body["temperature"] = 0;
-
-    std::string body = request_body.dump();
     auto start = steady_clock::now();
 
-    try {
-        std::string response = client.make_request("/api/v1/chat/completions", "POST", body, "application/json",
-                                                   300000, 300000);
-        auto resp_json = json::parse(response);
-
-        if (resp_json.contains("timings") && resp_json["timings"].is_object()) {
-            extract_timings_into_result(resp_json["timings"], result);
-        }
-        if (resp_json.contains("usage") && resp_json["usage"].is_object()) {
-            extract_usage_into_result(resp_json["usage"], result);
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "    Benchmark run failed: " << e.what() << std::endl;
+    std::string dispatch_error;
+    if (!dispatch_run_single_bench(client, model, scenario, result, dispatch_error)) {
+        std::cerr << "    Benchmark run failed: " << dispatch_error << std::endl;
         return result;
     }
 
     auto end = steady_clock::now();
     result.total_time_ms = duration<double, std::milli>(end - start).count();
+
+    if (scenario.task_type == "image_generation" ||
+        scenario.task_type == "transcription" ||
+        scenario.task_type == "tts") {
+        // For image-generation benchmarks, total request latency is the primary metric.
+        result.ttft_ms = result.total_time_ms;
+    }
 
     // Last resort: derive TPS from total time
     if (result.tps <= 0 && result.output_tokens > 0 && result.total_time_ms > 0) {
@@ -564,10 +913,17 @@ BenchRunResult run_single_bench(lemonade::LemonadeClient& client,
     // Validate: if all key metrics are zero the run failed server-side
     // (e.g. context size mismatch, model error). VRAM is excluded — it's
     // always reported correctly even for failed runs.
-    if (result.ttft_ms <= 0 && result.tps <= 0 &&
-        result.input_tokens <= 0 && result.output_tokens <= 0) {
-        std::cerr << "    Benchmark run failed (all metrics zero)" << std::endl;
-        return result;  // success stays false
+    if (scenario.task_type == "text_generation") {
+        if (result.ttft_ms <= 0 && result.tps <= 0 &&
+            result.input_tokens <= 0 && result.output_tokens <= 0) {
+            std::cerr << "    Benchmark run failed (all metrics zero)" << std::endl;
+            return result;  // success stays false
+        }
+    } else {
+        if (result.total_time_ms <= 0) {
+            std::cerr << "    Benchmark run failed (zero request latency)" << std::endl;
+            return result;
+        }
     }
 
     result.success = true;
@@ -588,6 +944,7 @@ BenchScenarioResult run_scenario(lemonade::LemonadeClient& client,
     BenchScenarioResult result;
     result.scenario_name = scenario.name;
     result.category = scenario.category;
+    result.task_type = scenario.task_type;
 
     // Load model (once if not reloading, or before each run if reloading)
     bool loaded = false;
@@ -632,8 +989,13 @@ BenchScenarioResult run_scenario(lemonade::LemonadeClient& client,
             std::cout << " FAILED (excluded from stats)" << std::endl;
             continue;
         }
-        std::cout << " TTFT=" << std::fixed << std::setprecision(1) << run_result.ttft_ms << "ms"
-                  << " TPS=" << std::fixed << std::setprecision(1) << run_result.tps << std::endl;
+        if (scenario.task_type != "text_generation") {
+            std::cout << " LAT=" << std::fixed << std::setprecision(2)
+                      << (run_result.total_time_ms / 1000.0) << "s" << std::endl;
+        } else {
+            std::cout << " TTFT=" << std::fixed << std::setprecision(1) << run_result.ttft_ms << "ms"
+                      << " TPS=" << std::fixed << std::setprecision(1) << run_result.tps << std::endl;
+        }
         result.runs.push_back(run_result);
     }
 
@@ -661,6 +1023,10 @@ static std::string fmt_double(double val, int precision = 1) {
     return oss.str();
 }
 
+static std::string fmt_seconds_from_ms(double ms) {
+    return fmt_double(ms / 1000.0, 2);
+}
+
 static std::string fmt_vram(double val) {
     if (val < 0) return "-";
     return fmt_double(val, 1);
@@ -678,7 +1044,10 @@ static std::string fmt_vram_change(std::optional<double> val) {
     return fmt_double(*val) + " GB";
 }
 
-static void print_scenario_row(const BenchScenarioResult& scenario, bool use_percentiles) {
+int namewidth = 32;
+static void print_scenario_row(const BenchScenarioResult& scenario,
+                               bool use_percentiles,
+                               bool latency_mode) {
     double ttft_1 = use_percentiles ? scenario.ttft_p50_ms() : scenario.ttft_min_ms();
     double ttft_2 = use_percentiles ? scenario.ttft_p95_ms() : scenario.ttft_max_ms();
     double tps_1 = use_percentiles ? scenario.tps_p50() : scenario.tps_min();
@@ -689,7 +1058,7 @@ static void print_scenario_row(const BenchScenarioResult& scenario, bool use_per
     }
     if (scenario.runs.empty()) {
         // All runs failed — show dashes
-        std::cout << std::left << std::setw(20) << name
+        std::cout << std::left << std::setw(namewidth) << name
                   << std::setw(8) << "-"
                   << std::setw(8) << "-"
                   << std::setw(8) << "-"
@@ -699,15 +1068,27 @@ static void print_scenario_row(const BenchScenarioResult& scenario, bool use_per
                   << std::setw(8) << "-"
                   << std::endl;
     } else {
-        std::cout << std::left << std::setw(20) << name
-                  << std::setw(8) << fmt_double(scenario.ttft_mean_ms())
-                  << std::setw(8) << fmt_double(ttft_1)
-                  << std::setw(8) << fmt_double(ttft_2)
-                  << std::setw(8) << fmt_double(scenario.tps_mean())
-                  << std::setw(8) << fmt_double(tps_1)
-                  << std::setw(8) << fmt_double(tps_2)
-                  << std::setw(8) << fmt_vram(scenario.vram_peak_gb())
-                  << std::endl;
+        if (latency_mode) {
+            std::cout << std::left << std::setw(namewidth) << name << " "
+                      << std::setw(8) << fmt_seconds_from_ms(scenario.ttft_mean_ms())
+                      << std::setw(8) << fmt_seconds_from_ms(ttft_1)
+                      << std::setw(8) << fmt_seconds_from_ms(ttft_2)
+                      << std::setw(8) << "-"
+                      << std::setw(8) << "-"
+                      << std::setw(8) << "-"
+                      << std::setw(8) << fmt_vram(scenario.vram_peak_gb())
+                      << std::endl;
+        } else {
+            std::cout << std::left << std::setw(namewidth) << name << " "
+                      << std::setw(8) << fmt_double(scenario.ttft_mean_ms())
+                      << std::setw(8) << fmt_double(ttft_1)
+                      << std::setw(8) << fmt_double(ttft_2)
+                      << std::setw(8) << fmt_double(scenario.tps_mean())
+                      << std::setw(8) << fmt_double(tps_1)
+                      << std::setw(8) << fmt_double(tps_2)
+                      << std::setw(8) << fmt_vram(scenario.vram_peak_gb())
+                      << std::endl;
+        }
     }
 }
 
@@ -722,19 +1103,30 @@ void print_table(const std::vector<BenchBackendResult>& results, const std::stri
         std::cout << "Backend: " << backend_result.label() << std::endl;
         std::cout << std::string(100, '-') << std::endl;
 
+        bool has_text = false;
+        bool has_non_text = false;
+        for (const auto& scenario : backend_result.scenarios) {
+            if (scenario.task_type == "text_generation") {
+                has_text = true;
+            } else {
+                has_non_text = true;
+            }
+        }
+        const bool latency_mode = has_non_text && !has_text;
+
         // Header — show min/max by default, switch to p50/p95 when runs >= 10
-        std::cout << std::left << std::setw(20) << "Scenario"
-                  << std::setw(8) << "TTFT"
+        std::cout << std::left << std::setw(namewidth) << "Scenario"
+                  << std::setw(8) << (latency_mode ? "Latency" : "TTFT")
                   << std::setw(8) << (use_percentiles ? "p50" : "min")
                   << std::setw(8) << (use_percentiles ? "p95" : "max")
-                  << std::setw(8) << "TPS"
-                  << std::setw(8) << (use_percentiles ? "p50" : "min")
-                  << std::setw(8) << (use_percentiles ? "p95" : "max")
+                  << std::setw(8) << (latency_mode ? "n/a" : "TPS")
+                  << std::setw(8) << (latency_mode ? "-" : (use_percentiles ? "p50" : "min"))
+                  << std::setw(8) << (latency_mode ? "-" : (use_percentiles ? "p95" : "max"))
                   << std::setw(8) << "VRAM (GB)" << std::endl;
         std::cout << std::string(100, '-') << std::endl;
 
         for (const auto& scenario : backend_result.scenarios) {
-            print_scenario_row(scenario, use_percentiles);
+            print_scenario_row(scenario, use_percentiles, latency_mode);
         }
     }
 
@@ -770,6 +1162,7 @@ json to_json(const std::vector<BenchBackendResult>& results,
             json s_json;
             s_json["name"] = scenario.scenario_name;
             s_json["category"] = scenario.category;
+            s_json["task_type"] = scenario.task_type;
             s_json["input_tokens"] = scenario.input_tokens();
             s_json["output_tokens"] = scenario.output_tokens();
 
@@ -1224,6 +1617,10 @@ int handle_bench_command(lemonade::LemonadeClient& client, const BenchConfig& co
         }
         const json& model_info = model_it->second;
         const std::string model_timestamp = get_timestamp_iso();
+        const std::string model_recipe =
+            (model_info.contains("recipe") && model_info["recipe"].is_string())
+                ? model_info["recipe"].get<std::string>()
+                : "";
 
         // Discover backends for this model
         auto backends = discover_backends(client, model, config.backends);
@@ -1232,18 +1629,36 @@ int handle_bench_command(lemonade::LemonadeClient& client, const BenchConfig& co
             return 1;
         }
 
-        // Determine context sizes for this model
-        std::vector<int> ctx_sizes = config.ctx_sizes;
-        if (ctx_sizes.empty()) {
-            // Use model's default context size from info, or a reasonable default
-            int default_ctx = 4096;
-            if (model_info.contains("recipe_options") && model_info["recipe_options"].is_object()) {
-                auto& opts = model_info["recipe_options"];
-                if (opts.contains("ctx_size") && opts["ctx_size"].is_number()) {
-                    default_ctx = opts["ctx_size"].get<int>();
-                }
+        bool model_needs_context = false;
+        for (const auto& scenario : scenarios) {
+            if (!task_uses_context(scenario.task_type)) {
+                continue;
             }
-            ctx_sizes = {default_ctx};
+
+            std::string compatibility_reason;
+            if (model_supports_task(model_info, model_recipe, scenario.task_type, compatibility_reason)) {
+                model_needs_context = true;
+                break;
+            }
+        }
+
+        // Determine context sizes only for models that actually run context-bound tasks.
+        std::vector<int> ctx_sizes;
+        if (!model_needs_context) {
+            ctx_sizes = {0};
+        } else {
+            ctx_sizes = config.ctx_sizes;
+            if (ctx_sizes.empty()) {
+                // Use model's default context size from info, or a reasonable default
+                int default_ctx = 4096;
+                if (model_info.contains("recipe_options") && model_info["recipe_options"].is_object()) {
+                    auto& opts = model_info["recipe_options"];
+                    if (opts.contains("ctx_size") && opts["ctx_size"].is_number()) {
+                        default_ctx = opts["ctx_size"].get<int>();
+                    }
+                }
+                ctx_sizes = {default_ctx};
+            }
         }
 
         std::vector<BenchBackendResult> all_results;
@@ -1276,7 +1691,8 @@ int handle_bench_command(lemonade::LemonadeClient& client, const BenchConfig& co
                     backend_result.backend_args = recipe_args;
 
                     for (const auto& scenario : scenarios) {
-                        std::cout << "  Scenario: " << scenario.name << " (" << scenario.category << ")" << std::endl;
+                        std::cout << "  Scenario: " << scenario.name << " (" << scenario.category
+                                  << ", " << scenario.task_type << ")" << std::endl;
 
                         int warmup = scenario.warmup_runs;
                         int runs = scenario.measurement_runs;
@@ -1284,6 +1700,18 @@ int handle_bench_command(lemonade::LemonadeClient& client, const BenchConfig& co
                         // Allow config overrides
                         if (config.warmup_runs > 0) warmup = config.warmup_runs;
                         if (config.measurement_runs > 0) runs = config.measurement_runs;
+
+                        std::string compatibility_reason;
+                        if (!model_supports_task(model_info, recipe, scenario.task_type, compatibility_reason)) {
+                            std::cout << "    Skipping scenario: " << compatibility_reason << std::endl;
+                            BenchScenarioResult skipped;
+                            skipped.scenario_name = scenario.name;
+                            skipped.category = scenario.category;
+                            skipped.task_type = scenario.task_type;
+                            skipped.failed_runs = runs;
+                            backend_result.scenarios.push_back(std::move(skipped));
+                            continue;
+                        }
 
                         auto scenario_result = run_scenario(client, model, scenario, warmup, runs,
                                                             config.memory_tracking, config.reload, recipe, backend, ctx_size, recipe_args);
@@ -1471,7 +1899,7 @@ int handle_bench_command(lemonade::LemonadeClient& client, const BenchConfig& co
 CLI::App* register_bench_command(CLI::App& parent,
                                  std::string& output_file,
                                  BenchCliOptions& opts) {
-    CLI::App* cmd = parent.add_subcommand("bench", "Benchmark a model's chat completion performance")->group("Model management");
+    CLI::App* cmd = parent.add_subcommand("bench", "Benchmark model inference performance across task types")->group("Model management");
     cmd->add_option("models", opts.models, "One or more model names to benchmark")
         ->required()
         ->type_name("MODEL")

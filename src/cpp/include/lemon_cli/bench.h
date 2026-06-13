@@ -24,7 +24,19 @@ using json = nlohmann::json;
 struct BenchScenario {
     std::string name;
     std::string category;
+    std::string task_type = "text_generation";  // Backward-compatible default
     std::vector<json> messages;  // Chat messages (system + user/assistant turns)
+    std::string prompt;          // Image generation prompt
+    std::string input;           // Text-to-speech input text
+    std::string audio_file;      // Path to transcription input audio file
+    std::string language;        // Optional transcription language
+    std::string voice;           // Optional TTS voice
+    std::string size;            // Optional image size (e.g. 512x512)
+    int steps = 0;               // Optional image generation steps
+    double cfg_scale = 0.0;      // Optional image generation cfg_scale
+    double speed = 0.0;          // Optional TTS speed
+    int seed = 0;                // Optional image generation seed
+    std::string response_format; // Optional task response format (image/transcription/tts)
     int max_tokens;
     int warmup_runs = 0;
     int measurement_runs = 3;
@@ -44,6 +56,7 @@ struct BenchRunResult {
 struct BenchScenarioResult {
     std::string scenario_name;
     std::string category;
+    std::string task_type = "text_generation";
     std::vector<BenchRunResult> runs;
     int failed_runs = 0;        // number of runs that failed and were excluded from stats
 
